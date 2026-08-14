@@ -1,0 +1,223 @@
+{
+  "annotations": { "list": [] },
+  "description": "SentinelFlow — Live microservice metrics: request rate, error rate, P95 latency, and service health",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "🟢 Service Health Status",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "options": { "0": { "color": "red", "index": 1, "text": "DOWN" }, "1": { "color": "green", "index": 0, "text": "UP" } }, "type": "value" }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "pluginVersion": "9.0.0",
+      "targets": [
+        { "expr": "service_up{service=\"user-service\"}", "legendFormat": "User Service", "refId": "A" },
+        { "expr": "service_up{service=\"order-service\"}", "legendFormat": "Order Service", "refId": "B" },
+        { "expr": "service_up{service=\"payment-service\"}", "legendFormat": "Payment Service", "refId": "C" },
+        { "expr": "service_up{service=\"inventory-service\"}", "legendFormat": "Inventory Service", "refId": "D" },
+        { "expr": "service_up{service=\"monitoring-service\"}", "legendFormat": "Monitoring Service", "refId": "E" },
+        { "expr": "service_up{service=\"incident-service\"}", "legendFormat": "Incident Service", "refId": "F" },
+        { "expr": "service_up{service=\"recovery-service\"}", "legendFormat": "Recovery Service", "refId": "G" },
+        { "expr": "service_up{service=\"notification-service\"}", "legendFormat": "Notification Service", "refId": "H" },
+        { "expr": "service_up{service=\"websocket-gateway\"}", "legendFormat": "WebSocket Gateway", "refId": "I" }
+      ],
+      "title": "Service Health (1 = UP, 0 = DOWN)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "title": "📈 Request Rate",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 10 }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 2,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total{service=\"user-service\"}[1m])) by (service)", "legendFormat": "User Service", "refId": "A" },
+        { "expr": "sum(rate(http_requests_total{service=\"order-service\"}[1m])) by (service)", "legendFormat": "Order Service", "refId": "B" },
+        { "expr": "sum(rate(http_requests_total{service=\"payment-service\"}[1m])) by (service)", "legendFormat": "Payment Service", "refId": "C" },
+        { "expr": "sum(rate(http_requests_total{service=\"inventory-service\"}[1m])) by (service)", "legendFormat": "Inventory Service", "refId": "D" }
+      ],
+      "title": "Business Services — Request Rate (req/s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 10 }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 3,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total{service=\"monitoring-service\"}[1m])) by (service)", "legendFormat": "Monitoring", "refId": "A" },
+        { "expr": "sum(rate(http_requests_total{service=\"incident-service\"}[1m])) by (service)", "legendFormat": "Incident", "refId": "B" },
+        { "expr": "sum(rate(http_requests_total{service=\"recovery-service\"}[1m])) by (service)", "legendFormat": "Recovery", "refId": "C" },
+        { "expr": "sum(rate(http_requests_total{service=\"notification-service\"}[1m])) by (service)", "legendFormat": "Notification", "refId": "D" },
+        { "expr": "sum(rate(http_requests_total{service=\"websocket-gateway\"}[1m])) by (service)", "legendFormat": "Gateway", "refId": "E" }
+      ],
+      "title": "Platform Services — Request Rate (req/s)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 102,
+      "title": "🔴 Error Rate",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 10 }, "unit": "reqps", "thresholds": { "mode": "absolute", "steps": [{ "color": "green" }, { "color": "red", "value": 0.1 }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "id": 4,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum(rate(http_errors_total{service=\"user-service\"}[1m])) by (service)", "legendFormat": "User Service", "refId": "A" },
+        { "expr": "sum(rate(http_errors_total{service=\"order-service\"}[1m])) by (service)", "legendFormat": "Order Service", "refId": "B" },
+        { "expr": "sum(rate(http_errors_total{service=\"payment-service\"}[1m])) by (service)", "legendFormat": "Payment Service", "refId": "C" },
+        { "expr": "sum(rate(http_errors_total{service=\"inventory-service\"}[1m])) by (service)", "legendFormat": "Inventory Service", "refId": "D" },
+        { "expr": "sum(rate(http_errors_total{service=\"incident-service\"}[1m])) by (service)", "legendFormat": "Incident Service", "refId": "E" },
+        { "expr": "sum(rate(http_errors_total{service=\"recovery-service\"}[1m])) by (service)", "legendFormat": "Recovery Service", "refId": "F" }
+      ],
+      "title": "All Services — Error Rate (5xx/s)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 103,
+      "title": "⚡ P95 Latency",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 8 }, "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green" }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 2 }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 5,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"user-service\"}[2m])) by (le, service))", "legendFormat": "User Service p95", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"order-service\"}[2m])) by (le, service))", "legendFormat": "Order Service p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"payment-service\"}[2m])) by (le, service))", "legendFormat": "Payment Service p95", "refId": "C" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"inventory-service\"}[2m])) by (le, service))", "legendFormat": "Inventory Service p95", "refId": "D" }
+      ],
+      "title": "Business Services — P95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 8 }, "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"monitoring-service\"}[2m])) by (le, service))", "legendFormat": "Monitoring p95", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"incident-service\"}[2m])) by (le, service))", "legendFormat": "Incident p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"recovery-service\"}[2m])) by (le, service))", "legendFormat": "Recovery p95", "refId": "C" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"websocket-gateway\"}[2m])) by (le, service))", "legendFormat": "Gateway p95", "refId": "D" }
+      ],
+      "title": "Platform Services — P95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 104,
+      "title": "📊 Payment Service Failure Simulation",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [{ "color": "green" }, { "color": "yellow", "value": 0.1 }, { "color": "red", "value": 0.5 }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 33 },
+      "id": 7,
+      "options": { "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [
+        { "expr": "sum(rate(http_errors_total{service=\"payment-service\"}[2m])) / sum(rate(http_requests_total{service=\"payment-service\"}[2m]))", "legendFormat": "Error Rate", "refId": "A" }
+      ],
+      "title": "Payment Service — Error Rate %",
+      "type": "gauge"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green" }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 2 }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 33 },
+      "id": 8,
+      "options": { "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"payment-service\"}[2m])) by (le))", "legendFormat": "p95 Latency", "refId": "A" }
+      ],
+      "title": "Payment Service — P95 Latency",
+      "type": "gauge"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [ { "options": { "0": { "color": "red", "index": 1, "text": "DOWN" }, "1": { "color": "green", "index": 0, "text": "UP" } }, "type": "value" } ], "thresholds": { "mode": "absolute", "steps": [{ "color": "red" }, { "color": "green", "value": 1 }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 33 },
+      "id": 9,
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "service_up{service=\"payment-service\"}", "legendFormat": "Status", "refId": "A" }
+      ],
+      "title": "Payment Service — Health",
+      "type": "stat"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["sentinelflow", "microservices"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SentinelFlow — Microservice Metrics",
+  "uid": "sentinelflow-main",
+  "version": 1
+}

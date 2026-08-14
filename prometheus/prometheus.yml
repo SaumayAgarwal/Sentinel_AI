@@ -1,0 +1,67 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: 'sentinelflow-user-service'
+    static_configs:
+      - targets: ['host.docker.internal:3001']
+        labels:
+          service: 'user-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-order-service'
+    static_configs:
+      - targets: ['host.docker.internal:3002']
+        labels:
+          service: 'order-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-payment-service'
+    static_configs:
+      - targets: ['host.docker.internal:3003']
+        labels:
+          service: 'payment-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-inventory-service'
+    static_configs:
+      - targets: ['host.docker.internal:3004']
+        labels:
+          service: 'inventory-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-monitoring-service'
+    static_configs:
+      - targets: ['host.docker.internal:3005']
+        labels:
+          service: 'monitoring-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-incident-service'
+    static_configs:
+      - targets: ['host.docker.internal:3006']
+        labels:
+          service: 'incident-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-recovery-service'
+    static_configs:
+      - targets: ['host.docker.internal:3007']
+        labels:
+          service: 'recovery-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-notification-service'
+    static_configs:
+      - targets: ['host.docker.internal:3008']
+        labels:
+          service: 'notification-service'
+    metrics_path: /metrics
+
+  - job_name: 'sentinelflow-websocket-gateway'
+    static_configs:
+      - targets: ['host.docker.internal:3009']
+        labels:
+          service: 'websocket-gateway'
+    metrics_path: /metrics
