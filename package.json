@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "dev": "npm run dev:all",
-    "dev:all": "concurrently -k -p \"[{name}]\" -n \"USER,ORDER,PAYMENT,INVENTORY,MONITOR,INCIDENT,RECOVERY,NOTIF,GATEWAY,FRONTEND\" -c \"cyan,blue,magenta,yellow,red,green,purple,gray,orange,white\" \"npm run dev -w services/user-service\" \"npm run dev -w services/order-service\" \"npm run dev -w services/payment-service\" \"npm run dev -w services/inventory-service\" \"npm run dev -w services/monitoring-service\" \"npm run dev -w services/incident-service\" \"npm run dev -w services/recovery-service\" \"npm run dev -w services/notification-service\" \"npm run dev -w services/websocket-gateway\" \"npm run dev -w frontend\"",
+    "dev:all": "concurrently -k -p \"[{name}]\" -n \"USER,ORDER,PAYMENT,INVENTORY,BANKING,MONITOR,INCIDENT,RECOVERY,NOTIF,GATEWAY,AI,FRONTEND\" -c \"cyan,blue,magenta,yellow,greenBright,red,green,purple,gray,orange,bgMagenta.white,white\" \"npm run dev -w services/user-service\" \"npm run dev -w services/order-service\" \"npm run dev -w services/payment-service\" \"npm run dev -w services/inventory-service\" \"npm run dev -w services/banking-services\" \"npm run dev -w services/monitoring-service\" \"npm run dev -w services/incident-service\" \"npm run dev -w services/recovery-service\" \"npm run dev -w services/notification-service\" \"npm run dev -w services/websocket-gateway\" \"npm run dev -w services/sentinel-ai\" \"npm run dev -w frontend\"",
+
     "db:generate": "npm run prisma:generate -w services/incident-service",
     "db:push": "npm run prisma:push -w services/incident-service",
     "health": "node scripts/health-check.js",
@@ -17,7 +18,8 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "monitoring:up": "docker compose up -d prometheus grafana",
-    "monitoring:logs": "docker compose logs -f prometheus grafana"
+    "monitoring:logs": "docker compose logs -f prometheus grafana",
+    "ai:backfill-embeddings": "node scripts/backfill-embeddings.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

@@ -1,8 +1,9 @@
 require('dotenv').config({ path: '../../.env' });
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
-const { createLogger, createProducer, createConsumer, createRedisClient, TOPICS, retryWithBackoff, metrics } = require('@sentinelflow/shared');
+const { createLogger, createProducer, createConsumer, createRedisClient, TOPICS, retryWithBackoff, metrics, registry, createEventEnvelope } = require('@sentinelflow/shared');
 const axios = require('axios');
+
 
 const SERVICE_NAME = 'incident-service';
 const PORT = process.env.PORT_INCIDENT || 3006;
@@ -25,6 +26,17 @@ const testDb = async () => {
     await prisma.$queryRaw`SELECT 1`;
     dbAvailable = true;
     logger.info('PostgreSQL: CONNECTED');
+    try {
+      await prisma.$executeRawUnsafe('CREATE EXTENSION IF NOT EXISTS vector;');
+      logger.info('PostgreSQL: pgvector extension is ENABLED');
+      try {
+        await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS incident_embedding_vector_idx ON "IncidentEmbedding" USING hnsw (embedding vector_cosine_ops);');
+      } catch (idxErr) {
+        // HNSW index created or non-critical
+      }
+    } catch (vecErr) {
+      logger.warn(`PostgreSQL pgvector extension unavailable (${vecErr.message}). Semantic RAG will fallback to RAG V1.`);
+    }
   } catch (err) {
     dbAvailable = false;
     logger.error(`❌ PostgreSQL is UNAVAILABLE on ${process.env.DATABASE_URL || 'localhost:5432'}: ${err.message}. Please ensure Docker container 'sentinelflow-postgres' is running.`);
@@ -149,8 +161,20 @@ const pushToGateway = async (eventType, payload) => {
 const RECOVERY_PORT = process.env.PORT_RECOVERY || 3007;
 
 const publishIncidentEvent = async (eventType, incident) => {
-  const payload = { eventType, incident, timestamp: new Date().toISOString() };
+  const payload = {
+    eventType,
+    incident,
+    projectId: incident?.projectId || 'ecommerce-001',
+    serviceId: incident?.serviceId || incident?.serviceName || 'unknown',
+    service: incident?.serviceName || incident?.serviceId || 'unknown',
+    incidentId: incident?.incidentId || incident?.id || null,
+    severity: incident?.severity || 'HIGH',
+    reason: incident?.reason || incident?.type || null,
+    status: incident?.status || 'OPEN',
+    timestamp: new Date().toISOString()
+  };
   let kafkaSent = false;
+
 
   if (kafkaProducer) {
     try {
@@ -278,13 +302,20 @@ const createIncident = async (eventData) => {
     { timestamp: now.toISOString(), event: 'Incident Created', details: `Incident record opened in PostgreSQL for ${serviceName} (Severity: ${eventData.severity || 'CRITICAL'})` }
   ];
 
+  const projectId = eventData.projectId || registry.DEFAULT_PROJECT_ID || 'ecommerce-001';
+  const reason = eventData.reason || eventData.error || (eventData.eventType ? `${eventData.eventType} detected` : 'Health check failures exceeded threshold');
+
   let incident = {
     id: `inc-${Date.now()}`,
+    incidentId: `INC-${Date.now().toString().slice(-6)}`,
+    projectId,
     serviceId: serviceName,
     serviceName,
     type: eventData.eventType || 'SERVICE_DOWN',
     severity: eventData.severity || 'CRITICAL',
     status: 'OPEN',
+    reason,
+    recoveryStatus: 'PENDING',
     timeline: initialTimeline,
     createdAt: now,
     updatedAt: now,
@@ -300,11 +331,15 @@ const createIncident = async (eventData) => {
   try {
     incident = await prisma.incident.create({
       data: {
+        projectId,
+        incidentId: incident.incidentId,
         serviceId: serviceName,
         serviceName,
         type: eventData.eventType || 'SERVICE_DOWN',
         severity: eventData.severity || 'CRITICAL',
         status: 'OPEN',
+        reason,
+        recoveryStatus: 'PENDING',
         timeline: initialTimeline,
         metadata: eventData
       }
@@ -510,12 +545,14 @@ app.get('/metrics', async (req, res) => {
 });
 
 app.get('/api/metrics/sre', async (req, res) => {
+  const { projectId } = req.query;
   if (!dbAvailable || !prisma) {
     return res.json({ mttdSeconds: 2.0, mttrSeconds: 6.0, availabilityPercent: 100.0, recoverySuccessRatePercent: 100.0, totalIncidents: 0, resolvedIncidents: 0 });
   }
 
   try {
-    const allIncidents = await prisma.incident.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
+    const where = projectId ? { projectId } : {};
+    const allIncidents = await prisma.incident.findMany({ where, orderBy: { createdAt: 'desc' }, take: 100 });
     const totalIncidents = allIncidents.length;
     const resolvedIncidents = allIncidents.filter(i => i.status === 'RESOLVED');
 
@@ -685,14 +722,265 @@ app.delete('/api/dlq/:id', async (req, res) => {
 
 app.get('/incidents', async (req, res) => {
   let incidents = [];
+  const { projectId, serviceId, status } = req.query;
   if (dbAvailable && prisma) {
     try {
-      incidents = await prisma.incident.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
+      const where = {};
+      if (projectId) where.projectId = projectId;
+      if (serviceId) where.serviceId = serviceId;
+      if (status) where.status = status;
+      incidents = await prisma.incident.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: 50
+      });
     } catch (err) {
       logger.warn(`Prisma findMany failed: ${err.message}`);
     }
   }
   res.json({ incidents });
+});
+
+// ─── Pre-AI Clean Interfaces ──────────────────────────────────────────────────
+
+// 1. Projects scoped incidents
+app.get('/projects/:projectId/incidents', async (req, res) => {
+  const { projectId } = req.params;
+  const { status, serviceId, limit = 50 } = req.query;
+  if (!dbAvailable || !prisma) return res.json({ projectId, incidents: [] });
+
+  try {
+    const where = { projectId };
+    if (status) where.status = status;
+    if (serviceId) where.serviceId = serviceId;
+
+    const incidents = await prisma.incident.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(parseInt(limit, 10) || 50, 100),
+      include: { recoveryActions: true }
+    });
+    res.json({ projectId, count: incidents.length, incidents });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Incident Timeline API (structured for AI understanding)
+app.get('/incidents/:id/timeline', async (req, res) => {
+  const { id } = req.params;
+  if (!dbAvailable || !prisma) return res.status(404).json({ error: 'Database unavailable' });
+
+  try {
+    const incident = await prisma.incident.findFirst({
+      where: {
+        OR: [{ id }, { incidentId: id }]
+      },
+      include: { recoveryActions: true }
+    });
+
+    if (!incident) return res.status(404).json({ error: `Incident '${id}' not found` });
+
+    // Format normalized timeline events
+    const rawTimeline = Array.isArray(incident.timeline) ? incident.timeline : [];
+    const formattedTimeline = rawTimeline.map((item, idx) => ({
+      sequence: idx + 1,
+      timestamp: item.timestamp,
+      phase: item.event,
+      details: item.details
+    }));
+
+    // Augment with recovery actions if any
+    const recoveryAudit = (incident.recoveryActions || []).map(ra => ({
+      recoveryActionId: ra.recoveryActionId,
+      actionType: ra.actionType,
+      requestedBy: ra.requestedBy,
+      status: ra.status,
+      attempt: ra.attempt,
+      startedAt: ra.startedAt,
+      completedAt: ra.completedAt
+    }));
+
+    res.json({
+      incidentId: incident.incidentId || incident.id,
+      id: incident.id,
+      projectId: incident.projectId,
+      serviceId: incident.serviceId,
+      severity: incident.severity,
+      status: incident.status,
+      reason: incident.reason,
+      createdAt: incident.createdAt,
+      resolvedAt: incident.resolvedAt,
+      timeline: formattedTimeline,
+      recoveryActions: recoveryAudit
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Historical Incidents API (designed for future RAG retrieval)
+app.get('/projects/:projectId/historical-incidents', async (req, res) => {
+  const { projectId } = req.params;
+  const { serviceId, type, severity, limit = 20 } = req.query;
+
+  if (!dbAvailable || !prisma) return res.json({ projectId, historicalIncidents: [] });
+
+  try {
+    const where = { projectId, status: 'RESOLVED' };
+    if (serviceId) where.serviceId = serviceId;
+    if (type) where.type = type;
+    if (severity) where.severity = severity;
+
+    const incidents = await prisma.incident.findMany({
+      where,
+      orderBy: { resolvedAt: 'desc' },
+      take: Math.min(parseInt(limit, 10) || 20, 50),
+      select: {
+        id: true,
+        incidentId: true,
+        projectId: true,
+        serviceId: true,
+        serviceName: true,
+        type: true,
+        severity: true,
+        status: true,
+        reason: true,
+        createdAt: true,
+        resolvedAt: true,
+        timeline: true,
+        recoveryActions: true
+      }
+    });
+
+    const enriched = incidents.map(inc => {
+      const durationMs = inc.resolvedAt && inc.createdAt
+        ? new Date(inc.resolvedAt).getTime() - new Date(inc.createdAt).getTime()
+        : 0;
+      return {
+        ...inc,
+        resolutionDurationSeconds: Math.round(durationMs / 1000),
+        effectiveRecoveryAction: inc.recoveryActions?.find(a => a.status === 'SUCCESS')?.actionType || 'RESTART'
+      };
+    });
+
+    res.json({
+      projectId,
+      count: enriched.length,
+      historicalIncidents: enriched
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3.1 Semantic Incident Search (RAG V2 pgvector)
+app.post('/projects/:projectId/incidents/semantic-search', async (req, res) => {
+  const { projectId } = req.params;
+  const { queryVector, serviceId, limit = 5, threshold = 0.5 } = req.body;
+
+  if (!queryVector || !Array.isArray(queryVector)) {
+    return res.status(400).json({ error: 'queryVector must be an array of numbers' });
+  }
+
+  if (!dbAvailable || !prisma) {
+    return res.json({ projectId, count: 0, candidates: [], retrievalMode: 'semantic', warning: 'Database unavailable' });
+  }
+
+  try {
+    const vectorStr = `[${queryVector.join(',')}]`;
+    const maxResults = Math.min(parseInt(limit, 10) || 5, 20);
+    const minThreshold = parseFloat(threshold) || 0.0;
+
+    let serviceFilter = '';
+    const params = [vectorStr, projectId, minThreshold, maxResults];
+    if (serviceId) {
+      serviceFilter = 'AND e."serviceId" = $5';
+      params.push(serviceId);
+    }
+
+    const sql = `
+      SELECT 
+        e."incidentId",
+        e."serviceId",
+        e."content",
+        ROUND((1 - (e.embedding <=> $1::vector))::numeric, 4) AS similarity,
+        i.type,
+        i.severity,
+        i.status,
+        i.reason,
+        i."createdAt",
+        i."resolvedAt"
+      FROM "IncidentEmbedding" e
+      LEFT JOIN "Incident" i ON (e."incidentId" = i."incidentId" OR e."incidentId" = i.id)
+      WHERE e."projectId" = $2
+        AND e.embedding IS NOT NULL
+        ${serviceFilter}
+        AND (1 - (e.embedding <=> $1::vector)) >= $3
+      ORDER BY similarity DESC
+      LIMIT $4;
+    `;
+
+    const rawResults = await prisma.$queryRawUnsafe(sql, ...params);
+
+    const candidates = rawResults.map(r => ({
+      incidentId: r.incidentId,
+      serviceId: r.serviceId,
+      content: r.content,
+      similarityScore: parseFloat(r.similarity),
+      type: r.type,
+      severity: r.severity,
+      reason: r.reason,
+      status: r.status,
+      createdAt: r.createdAt,
+      resolvedAt: r.resolvedAt,
+      retrievalMode: 'semantic'
+    }));
+
+    res.json({
+      projectId,
+      count: candidates.length,
+      candidates,
+      retrievalMode: 'semantic'
+    });
+  } catch (err) {
+    logger.warn(`Semantic search via pgvector failed: ${err.message}`);
+    res.status(500).json({ error: err.message, retrievalMode: 'semantic' });
+  }
+});
+
+// 3.2 Upsert Incident Embedding
+app.post('/projects/:projectId/incidents/:incidentId/embed', async (req, res) => {
+  const { projectId, incidentId } = req.params;
+  const { content, embedding, embeddingModel = 'text-embedding-3-small', serviceId = 'unknown' } = req.body;
+
+  if (!content || !embedding || !Array.isArray(embedding)) {
+    return res.status(400).json({ error: 'content and embedding array are required' });
+  }
+
+  if (!dbAvailable || !prisma) {
+    return res.status(503).json({ error: 'Database unavailable' });
+  }
+
+  try {
+    const vectorStr = `[${embedding.join(',')}]`;
+    const sql = `
+      INSERT INTO "IncidentEmbedding" ("id", "incidentId", "projectId", "serviceId", "content", "embeddingModel", "embedding", "createdAt", "updatedAt")
+      VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6::vector, NOW(), NOW())
+      ON CONFLICT ("incidentId") DO UPDATE
+      SET "content" = EXCLUDED."content",
+          "embedding" = EXCLUDED."embedding",
+          "embeddingModel" = EXCLUDED."embeddingModel",
+          "updatedAt" = NOW()
+      RETURNING "id", "incidentId", "projectId", "serviceId";
+    `;
+
+    const result = await prisma.$queryRawUnsafe(sql, incidentId, projectId, serviceId, content, embeddingModel, vectorStr);
+    res.json({ success: true, result: result[0] });
+  } catch (err) {
+    logger.error(`Upsert incident embedding failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Called by monitoring-service via HTTP when Kafka is unavailable

@@ -1,4 +1,5 @@
 const { Kafka, logLevel } = require('kafkajs');
+const { v4: uuidv4 } = require('uuid');
 
 const broker = process.env.KAFKA_BROKER || '127.0.0.1:9092';
 const clientId = process.env.KAFKA_CLIENT_ID || 'sentinelflow';
@@ -22,6 +23,44 @@ const TOPICS = {
   RECOVERY_EVENTS: 'recovery-events',
   NOTIFICATION_EVENTS: 'notification-events',
   DLQ_EVENTS: 'incident-events.DLQ'
+};
+
+// Standard event envelope for SentinelFlow / SentinelAI
+// Guarantees consistent IDs and backwards compatibility
+const createEventEnvelope = ({
+  eventId,
+  eventType,
+  projectId = 'ecommerce-001',
+  serviceId,
+  service,
+  incidentId,
+  recoveryActionId,
+  severity,
+  reason,
+  status,
+  timestamp,
+  metadata = {},
+  ...rest
+}) => {
+  const finalServiceId = serviceId || service || 'unknown';
+  const finalEventId = eventId || `evt-${Date.now()}-${uuidv4().substring(0, 8)}`;
+  const finalTimestamp = timestamp || new Date().toISOString();
+
+  return {
+    eventId: finalEventId,
+    eventType: eventType || 'UNKNOWN_EVENT',
+    timestamp: finalTimestamp,
+    projectId: projectId || 'ecommerce-001',
+    serviceId: finalServiceId,
+    service: finalServiceId, // Backwards compatibility for existing consumers
+    incidentId: incidentId || null,
+    recoveryActionId: recoveryActionId || null,
+    severity: severity || 'INFO',
+    reason: reason || null,
+    status: status || null,
+    metadata,
+    ...rest
+  };
 };
 
 // Exponential backoff retry helper for consumer processing failures
@@ -76,11 +115,13 @@ const createProducer = async (logger) => {
   if (logger) logger.info('Kafka Producer: CONNECTED');
   return {
     send: async (topic, message) => {
+      // If message is not already an envelope, standardize it
+      const standardEnvelope = message.eventId && message.projectId
+        ? { ...message, timestamp: message.timestamp || new Date().toISOString() }
+        : createEventEnvelope(message);
+
       const payload = {
-        value: JSON.stringify({
-          ...message,
-          timestamp: message.timestamp || new Date().toISOString()
-        })
+        value: JSON.stringify(standardEnvelope)
       };
       return await producer.send({ topic, messages: [payload] });
     },
@@ -101,6 +142,10 @@ const createConsumer = async (groupId, topics, onMessage, logger) => {
     eachMessage: async ({ topic, partition, message }) => {
       try {
         const value = JSON.parse(message.value.toString());
+        // Normalize fields so serviceId and service are both available
+        if (!value.serviceId && value.service) value.serviceId = value.service;
+        if (!value.service && value.serviceId) value.service = value.serviceId;
+        if (!value.projectId) value.projectId = 'ecommerce-001';
         await onMessage(topic, value);
       } catch (err) {
         if (logger) logger.error(`Error processing Kafka message on topic ${topic}`, { error: err.message });
@@ -117,6 +162,6 @@ module.exports = {
   initTopics,
   createProducer,
   createConsumer,
-  retryWithBackoff
+  retryWithBackoff,
+  createEventEnvelope
 };
-

@@ -2,28 +2,56 @@ import React, { useState } from 'react';
 import { Play, AlertTriangle, ShieldCheck, Flame, Clock, RefreshCw, ExternalLink } from 'lucide-react';
 import { simulateFailure, triggerRecovery } from '../services/api';
 
-export default function DemoControls({ onActionTriggered }) {
-  const [selectedService, setSelectedService] = useState('payment-service');
+export default function DemoControls({ onActionTriggered, disabled = false, projectId = 'ecommerce-001' }) {
+  const isBanking = projectId === 'banking-001';
+  const defaultService = isBanking ? 'transaction-service' : 'payment-service';
+  const [selectedService, setSelectedService] = useState(defaultService);
   const [loading, setLoading] = useState(false);
   const [lastAction, setLastAction] = useState(null);
+
+  // Sync default service when project changes
+  React.useEffect(() => {
+    setSelectedService(isBanking ? 'transaction-service' : 'payment-service');
+  }, [projectId]);
+
+  if (disabled) {
+    return (
+      <div className="glass-panel rounded-xl p-5 mb-8 border border-slate-800 bg-slate-950/40">
+        <div className="flex items-center gap-2.5">
+          <Flame className="w-5 h-5 text-slate-500" />
+          <div>
+            <h2 className="text-base font-bold text-slate-400 tracking-tight font-mono">Interactive Demo Controls</h2>
+            <p className="text-xs text-slate-500 font-mono mt-0.5">
+              Demo controls unavailable for this project ({projectId}).
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const servicePorts = {
     'user-service': 3001,
     'order-service': 3002,
     'payment-service': 3003,
-    'inventory-service': 3004
+    'inventory-service': 3004,
+    'auth-service': 3021,
+    'account-service': 3022,
+    'transaction-service': 3023,
+    'fraud-detection-service': 3024,
+    'notification-service': 3025
   };
-  const currentPort = servicePorts[selectedService] || 3003;
+  const currentPort = servicePorts[selectedService] || (isBanking ? 3023 : 3003);
   const currentUrl = `http://localhost:${currentPort}/health`;
 
   const handleSimulate = async (mode) => {
     setLoading(true);
     try {
       if (mode === 'RECOVER') {
-        const res = await triggerRecovery(selectedService);
+        const res = await triggerRecovery(selectedService, projectId);
         setLastAction({ type: 'SUCCESS', message: `Recovery sent to ${selectedService}` });
       } else {
-        const res = await simulateFailure(selectedService, mode);
+        const res = await simulateFailure(selectedService, mode, projectId);
         setLastAction({ type: 'WARNING', message: `Simulated ${mode} on ${selectedService}` });
       }
       if (onActionTriggered) onActionTriggered();
@@ -43,7 +71,7 @@ export default function DemoControls({ onActionTriggered }) {
             <h2 className="text-lg font-bold text-white tracking-tight">Interactive Demo Controls</h2>
           </div>
           <p className="text-xs text-slate-400 font-mono mt-0.5">
-            Triggers actual backend failure modes across the microservice cluster
+            Triggers actual backend failure modes across the {isBanking ? 'Banking' : 'E-Commerce'} microservice cluster
           </p>
         </div>
 
@@ -55,10 +83,22 @@ export default function DemoControls({ onActionTriggered }) {
             onChange={(e) => setSelectedService(e.target.value)}
             className="bg-slate-900 border border-slate-700 text-cyan-400 font-mono text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500"
           >
-            <option value="payment-service">Payment Service (Primary Demo)</option>
-            <option value="user-service">User Service</option>
-            <option value="order-service">Order Service</option>
-            <option value="inventory-service">Inventory Service</option>
+            {isBanking ? (
+              <>
+                <option value="transaction-service">Transaction Service (Primary Demo)</option>
+                <option value="account-service">Account Service</option>
+                <option value="fraud-detection-service">Fraud Detection Service</option>
+                <option value="auth-service">Auth Service</option>
+                <option value="notification-service">Notification Service</option>
+              </>
+            ) : (
+              <>
+                <option value="payment-service">Payment Service (Primary Demo)</option>
+                <option value="user-service">User Service</option>
+                <option value="order-service">Order Service</option>
+                <option value="inventory-service">Inventory Service</option>
+              </>
+            )}
           </select>
 
           <a

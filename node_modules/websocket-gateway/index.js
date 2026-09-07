@@ -4,7 +4,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const axios = require('axios');
-const { createLogger, createConsumer, TOPICS, metrics } = require('@sentinelflow/shared');
+const { createLogger, createConsumer, TOPICS, metrics, registry, logStore } = require('@sentinelflow/shared');
+
 
 const SERVICE_NAME = 'websocket-gateway';
 const PORT = process.env.PORT_GATEWAY || 3009;
@@ -107,10 +108,16 @@ app.post('/internal/push', (req, res) => {
       io.emit('dlq:event_deleted', payload);
       break;
     }
+    case 'AI_INVESTIGATION_UPDATED': {
+      pushEvent('AI_INVESTIGATION', payload);
+      io.emit('ai:investigation', payload);
+      break;
+    }
     default: {
       pushEvent(eventType, payload);
       break;
     }
+
   }
 
   res.json({ ok: true, clients: io.engine.clientsCount });
@@ -157,42 +164,64 @@ app.get('/metrics', async (req, res) => {
 });
 
 app.get('/api/events', (req, res) => {
+  const { projectId } = req.query;
+  if (projectId) {
+    const filtered = recentEvents.filter(e => {
+      const pId = e.data?.projectId || e.projectId;
+      return pId === projectId;
+    });
+    return res.json({ events: filtered });
+  }
   res.json({ events: recentEvents });
 });
 
-// Proxy endpoint to aggregate service status
+// Proxy endpoint to aggregate service status (optionally scoped by projectId)
 app.get('/api/services', async (req, res) => {
+  const { projectId } = req.query;
   try {
     const monitorPort = process.env.PORT_MONITORING || 3005;
     const response = await axios.get(`http://localhost:${monitorPort}/api/monitors`, { timeout: 3000 });
-    return res.json(response.data);
+    let servicesList = response.data?.services || [];
+    if (projectId) {
+      servicesList = servicesList.filter(s => (s.projectId || 'ecommerce-001') === projectId);
+    }
+    return res.json({ services: servicesList });
   } catch (err) {
-    const fallbackServices = [
-      { name: 'user-service', status: 'UNKNOWN', lastLatencyMs: 0 },
-      { name: 'order-service', status: 'UNKNOWN', lastLatencyMs: 0 },
-      { name: 'payment-service', status: 'UNKNOWN', lastLatencyMs: 0 },
-      { name: 'inventory-service', status: 'UNKNOWN', lastLatencyMs: 0 }
+    let fallbackServices = [
+      { name: 'user-service', status: 'UNKNOWN', lastLatencyMs: 0, projectId: 'ecommerce-001' },
+      { name: 'order-service', status: 'UNKNOWN', lastLatencyMs: 0, projectId: 'ecommerce-001' },
+      { name: 'payment-service', status: 'UNKNOWN', lastLatencyMs: 0, projectId: 'ecommerce-001' },
+      { name: 'inventory-service', status: 'UNKNOWN', lastLatencyMs: 0, projectId: 'ecommerce-001' }
     ];
+    if (projectId) {
+      fallbackServices = fallbackServices.filter(s => s.projectId === projectId);
+    }
     return res.json({ services: fallbackServices });
   }
 });
 
-// Proxy endpoint to fetch incidents
+// Proxy endpoint to fetch incidents (supports optional projectId query param)
 app.get('/api/incidents', async (req, res) => {
   try {
     const incidentPort = process.env.PORT_INCIDENT || 3006;
-    const response = await axios.get(`http://localhost:${incidentPort}/incidents`, { timeout: 3000 });
+    const response = await axios.get(`http://localhost:${incidentPort}/incidents`, {
+      params: req.query,
+      timeout: 3000
+    });
     return res.json(response.data);
   } catch (err) {
     return res.json({ incidents: [] });
   }
 });
 
-// Proxy SRE metrics from incident service
+// Proxy SRE metrics from incident service (supports optional projectId query param)
 app.get('/api/metrics/sre', async (req, res) => {
   try {
     const incidentPort = process.env.PORT_INCIDENT || 3006;
-    const response = await axios.get(`http://localhost:${incidentPort}/api/metrics/sre`, { timeout: 3000 });
+    const response = await axios.get(`http://localhost:${incidentPort}/api/metrics/sre`, {
+      params: req.query,
+      timeout: 3000
+    });
     return res.json(response.data);
   } catch (err) {
     return res.json({ mttdSeconds: 2.0, mttrSeconds: 6.0, availabilityPercent: 100.0, recoverySuccessRatePercent: 100.0 });
@@ -231,12 +260,30 @@ const SERVICE_PORTS = {
   'user-service': process.env.PORT_USER || 3001,
   'order-service': process.env.PORT_ORDER || 3002,
   'payment-service': process.env.PORT_PAYMENT || 3003,
-  'inventory-service': process.env.PORT_INVENTORY || 3004
+  'inventory-service': process.env.PORT_INVENTORY || 3004,
+  'auth-service': process.env.PORT_BANKING_AUTH || 3021,
+  'account-service': process.env.PORT_BANKING_ACCOUNT || 3022,
+  'transaction-service': process.env.PORT_BANKING_TRANSACTION || 3023,
+  'fraud-detection-service': process.env.PORT_BANKING_FRAUD || 3024,
+  'notification-service': process.env.PORT_BANKING_NOTIFICATION || 3025
+};
+
+const resolveTargetPort = (serviceName, projectId) => {
+  if (projectId) {
+    const svc = registry.getService(projectId, serviceName);
+    if (svc?.port) return svc.port;
+  }
+  // Try all projects in registry
+  for (const p of registry.getProjects()) {
+    const s = registry.getService(p.id, serviceName);
+    if (s?.port) return s.port;
+  }
+  return SERVICE_PORTS[serviceName] || 3003;
 };
 
 app.post('/api/admin/failure', async (req, res) => {
-  const { service, mode } = req.body;
-  const targetPort = SERVICE_PORTS[service || 'payment-service'] || 3003;
+  const { service, mode, projectId } = req.body;
+  const targetPort = resolveTargetPort(service || 'payment-service', projectId);
   try {
     const response = await axios.post(`http://localhost:${targetPort}/admin/failure`, { mode });
     return res.json(response.data);
@@ -246,8 +293,8 @@ app.post('/api/admin/failure', async (req, res) => {
 });
 
 app.post('/api/admin/recovery', async (req, res) => {
-  const { service } = req.body;
-  const targetPort = SERVICE_PORTS[service || 'payment-service'] || 3003;
+  const { service, projectId } = req.body;
+  const targetPort = resolveTargetPort(service || 'payment-service', projectId);
   try {
     const response = await axios.post(`http://localhost:${targetPort}/admin/recovery`);
     return res.json(response.data);
@@ -301,12 +348,218 @@ app.post('/api/admin/consumer-failure', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/admin/consumer-failure', async (req, res) => {
-  try {
-    const r = await axios.get(`http://localhost:${INCIDENT_PORT_GW}/admin/consumer-failure`, { timeout: 3000 });
-    res.json(r.data);
-  } catch (err) { res.json({ simulateConsumerFailure: false }); }
+// ─── SentinelAI Tool API Facade & Proxies ──────────────────────────────────────
+const MONITOR_PORT_GW = process.env.PORT_MONITORING || 3005;
+const RECOVERY_PORT_GW = process.env.PORT_RECOVERY || 3007;
+
+// Internal Auth middleware helper for sensitive AI actions (e.g. recovery)
+const verifyInternalAuth = (req, res, next) => {
+  const authHeader = req.headers['x-sentinel-auth'] || req.headers['authorization'];
+  // Allow requests if internal token matches OR in development default token
+  const validToken = process.env.SENTINEL_INTERNAL_TOKEN || 'sentinel-ai-internal-key';
+  if (process.env.NODE_ENV === 'production' && authHeader !== validToken) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid SentinelAI authentication token' });
+  }
+  next();
+};
+
+// 1. Projects Registry API
+app.get('/api/projects', (req, res) => {
+  res.json({ projects: registry.getProjects() });
 });
+
+app.get('/api/projects/:projectId', (req, res) => {
+  const project = registry.getProject(req.params.projectId);
+  if (!project) return res.status(404).json({ error: `Project '${req.params.projectId}' not found` });
+  res.json(project);
+});
+
+// 2. Services in Project API
+app.get('/api/projects/:projectId/services', (req, res) => {
+  const services = registry.getServices(req.params.projectId);
+  res.json({ projectId: req.params.projectId, count: services.length, services });
+});
+
+// 3. Service Health API (proxied to monitoring-service)
+app.get('/api/projects/:projectId/services/:serviceId/health', async (req, res) => {
+  const { projectId, serviceId } = req.params;
+  try {
+    const r = await axios.get(`http://localhost:${MONITOR_PORT_GW}/projects/${projectId}/services/${serviceId}/health`, { timeout: 3000 });
+    res.json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
+// 4. Service Metrics API (proxied to monitoring-service)
+app.get('/api/projects/:projectId/services/:serviceId/metrics', async (req, res) => {
+  const { projectId, serviceId } = req.params;
+  try {
+    const r = await axios.get(`http://localhost:${MONITOR_PORT_GW}/projects/${projectId}/services/${serviceId}/metrics`, { timeout: 3000 });
+    res.json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
+// 5. Service Logs API
+// For banking-001: proxy to each service's /internal/logs (separate process, separate logStore)
+// For all other projects: read from the gateway's shared in-memory logStore
+app.get('/api/projects/:projectId/services/:serviceId/logs', async (req, res) => {
+  const { projectId, serviceId } = req.params;
+  const { level, from, to, limit } = req.query;
+
+  if (projectId === 'banking-001') {
+    const targetPort = resolveTargetPort(serviceId, projectId);
+    try {
+      const qs = new URLSearchParams();
+      if (level) qs.set('level', level);
+      if (from) qs.set('from', from);
+      if (to) qs.set('to', to);
+      if (limit) qs.set('limit', limit);
+      const r = await axios.get(`http://localhost:${targetPort}/internal/logs?${qs.toString()}`, { timeout: 3000 });
+      return res.json(r.data);
+    } catch (err) {
+      return res.json({ projectId, serviceId, count: 0, logs: [], error: err.message });
+    }
+  }
+
+  const logs = logStore.getLogs({
+    projectId,
+    serviceId,
+    level,
+    from,
+    to,
+    limit: limit ? parseInt(limit, 10) : 50
+  });
+
+  res.json({
+    projectId,
+    serviceId,
+    count: logs.length,
+    logs
+  });
+});
+
+// 6. Service Dependencies API (proxied to monitoring-service)
+app.get('/api/projects/:projectId/services/:serviceId/dependencies', async (req, res) => {
+  const { projectId, serviceId } = req.params;
+  try {
+    const r = await axios.get(`http://localhost:${MONITOR_PORT_GW}/projects/${projectId}/services/${serviceId}/dependencies`, { timeout: 3000 });
+    res.json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
+// 7. Service Recovery Capabilities API
+app.get('/api/projects/:projectId/services/:serviceId/recovery-capabilities', (req, res) => {
+  const { projectId, serviceId } = req.params;
+  const cap = registry.getRecoveryCapabilities(projectId, serviceId);
+  if (!cap) return res.status(404).json({ error: `Service '${serviceId}' not found in project '${projectId}'` });
+  res.json(cap);
+});
+
+// 8. Incident Timeline API (proxied to incident-service)
+app.get('/api/incidents/:id/timeline', async (req, res) => {
+  try {
+    const r = await axios.get(`http://localhost:${INCIDENT_PORT_GW}/incidents/${req.params.id}/timeline`, { timeout: 3000 });
+    res.json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
+// 9. Historical Incidents API (proxied to incident-service)
+app.get('/api/projects/:projectId/historical-incidents', async (req, res) => {
+  const { projectId } = req.params;
+  try {
+    const r = await axios.get(`http://localhost:${INCIDENT_PORT_GW}/projects/${projectId}/historical-incidents`, {
+      params: req.query,
+      timeout: 3000
+    });
+    res.json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
+// 9b. Project Scoped Incidents API (proxied to incident-service)
+app.get('/api/projects/:projectId/incidents', async (req, res) => {
+  const { projectId } = req.params;
+  try {
+    const r = await axios.get(`http://localhost:${INCIDENT_PORT_GW}/projects/${projectId}/incidents`, {
+      params: req.query,
+      timeout: 3000
+    });
+    res.json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
+// 10. Controlled Recovery Request API (protected by verifyInternalAuth)
+app.post('/api/projects/:projectId/incidents/:incidentId/recovery', verifyInternalAuth, async (req, res) => {
+  const { projectId, incidentId } = req.params;
+  try {
+    const r = await axios.post(
+      `http://localhost:${RECOVERY_PORT_GW}/projects/${projectId}/incidents/${incidentId}/recovery`,
+      req.body,
+      { timeout: 5000 }
+    );
+    res.status(r.status).json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
+// 11. SentinelAI Investigation Proxy Routes
+const AI_PORT_GW = process.env.PORT_AI || 3011;
+
+app.get('/api/ai/investigations', async (req, res) => {
+  try {
+    const r = await axios.get(`http://localhost:${AI_PORT_GW}/api/ai/investigations`, { timeout: 3000 });
+    res.json(r.data);
+  } catch (err) {
+    res.json({ count: 0, investigations: [] });
+  }
+});
+
+app.get('/api/ai/investigations/:incidentId', async (req, res) => {
+  try {
+    const r = await axios.get(`http://localhost:${AI_PORT_GW}/api/ai/investigations/${req.params.incidentId}`, { timeout: 3000 });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 404).json(err.response?.data || { error: 'Not found' });
+  }
+});
+
+app.get('/api/ai/projects/:projectId/investigations', async (req, res) => {
+  try {
+    const r = await axios.get(`http://localhost:${AI_PORT_GW}/api/ai/projects/${req.params.projectId}/investigations`, { timeout: 3000 });
+    res.json(r.data);
+  } catch (err) {
+    res.json({ projectId: req.params.projectId, count: 0, investigations: [] });
+  }
+});
+
+app.post('/api/ai/investigate/:incidentId', async (req, res) => {
+  try {
+    const r = await axios.post(`http://localhost:${AI_PORT_GW}/api/ai/investigate/${req.params.incidentId}`, req.body, { timeout: 5000 });
+    res.status(r.status).json(r.data);
+  } catch (err) {
+    const errData = err.response?.data || { error: err.message };
+    res.status(err.response?.status || 500).json(errData);
+  }
+});
+
 
 const start = async () => {
   // Try Kafka (optional - system works without it)

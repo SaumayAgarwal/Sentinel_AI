@@ -1,7 +1,8 @@
 require('dotenv').config({ path: '../../.env' });
 const express = require('express');
 const axios = require('axios');
-const { createLogger, createProducer, createConsumer, createRedisClient, TOPICS, metrics } = require('@sentinelflow/shared');
+const { createLogger, createProducer, createConsumer, createRedisClient, TOPICS, metrics, registry, createEventEnvelope } = require('@sentinelflow/shared');
+
 
 const SERVICE_NAME = 'recovery-service';
 const PORT = process.env.PORT_RECOVERY || 3007;
@@ -21,33 +22,73 @@ const SERVICE_PORTS = {
 
 const activeRecoveries = new Set();
 
-const executeRecoveryProcedure = async (serviceName, incidentId) => {
+const executeRecoveryProcedure = async (serviceName, incidentId, options = {}) => {
+  const projectId = options.projectId || registry.DEFAULT_PROJECT_ID || 'ecommerce-001';
+  const actionType = (options.actionType || 'RESTART').toUpperCase();
+  const requestedBy = options.requestedBy || 'SYSTEM';
+  const recoveryActionId = `REC-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+
+  // Capability validation
+  const capInfo = registry.getRecoveryCapabilities(projectId, serviceName);
+  const allowedCaps = (capInfo?.recoveryCapabilities || ['restart']).map(c => c.toUpperCase());
+  if (!allowedCaps.includes(actionType.toLowerCase()) && !allowedCaps.includes(actionType)) {
+    logger.error(`Recovery capability check failed: Service ${serviceName} does not support action ${actionType}. Allowed: ${allowedCaps.join(', ')}`);
+    return {
+      success: false,
+      recoveryActionId,
+      error: `Action '${actionType}' not supported for service '${serviceName}'`
+    };
+  }
+
   if (activeRecoveries.has(serviceName)) {
     logger.info(`Recovery already in progress for ${serviceName}, skipping duplicate recovery trigger.`);
-    return;
+    return { success: false, recoveryActionId, error: `Recovery already active for ${serviceName}` };
   }
   activeRecoveries.add(serviceName);
 
   try {
-    const targetPort = SERVICE_PORTS[serviceName];
+    const registeredSvc = registry.getService(projectId, serviceName);
+    const targetPort = registeredSvc?.port || SERVICE_PORTS[serviceName];
     if (!targetPort) {
-      logger.error(`Unknown service for recovery: ${serviceName}`);
-      return;
+      logger.error(`Unknown service for recovery: ${serviceName} (projectId: ${projectId})`);
+      return { success: false, recoveryActionId, error: `Unknown service: ${serviceName}` };
     }
 
     const recoveryUrl = `http://localhost:${targetPort}/admin/recovery`;
     const maxAttempts = 5;
     let success = false;
 
+    // Emit RECOVERY_REQUESTED event
+    if (kafkaProducer) {
+      try {
+        await kafkaProducer.send(TOPICS.RECOVERY_EVENTS, {
+          eventType: 'RECOVERY_REQUESTED',
+          projectId,
+          serviceId: serviceName,
+          service: serviceName,
+          incidentId,
+          recoveryActionId,
+          actionType,
+          requestedBy,
+          timestamp: new Date().toISOString()
+        });
+      } catch (e) {}
+    }
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s, 16s, 32s
-      logger.info(`Recovery attempt ${attempt}/${maxAttempts} for ${serviceName} (Delaying ${delay}ms)`);
+      logger.info(`Recovery attempt ${attempt}/${maxAttempts} for ${serviceName} [Action: ${actionType}, ActionID: ${recoveryActionId}] (Delaying ${delay}ms)`);
 
       // Emit RECOVERY_ATTEMPT_STARTED event
       const attemptPayload = {
         eventType: 'RECOVERY_ATTEMPT_STARTED',
+        projectId,
+        serviceId: serviceName,
         service: serviceName,
         incidentId,
+        recoveryActionId,
+        actionType,
+        requestedBy,
         attempt,
         maxAttempts,
         delayMs: delay,
@@ -64,8 +105,12 @@ const executeRecoveryProcedure = async (serviceName, incidentId) => {
       try {
         await axios.post(`http://localhost:${INCIDENT_PORT}/incidents/trigger`, {
           eventType: 'RECOVERY_ATTEMPT',
+          projectId,
+          serviceId: serviceName,
           service: serviceName,
           incidentId,
+          recoveryActionId,
+          actionType,
           attempt,
           maxAttempts,
           delayMs: delay,
@@ -79,7 +124,7 @@ const executeRecoveryProcedure = async (serviceName, incidentId) => {
         const res = await axios.post(recoveryUrl, {}, { timeout: 5000 });
         if (res.status === 200) {
           success = true;
-          logger.info(`RECOVERY SUCCESSFUL for ${serviceName} on attempt ${attempt}`);
+          logger.info(`RECOVERY SUCCESSFUL for ${serviceName} on attempt ${attempt} [Action: ${actionType}]`);
 
           // Update Redis status
           try {
@@ -91,8 +136,13 @@ const executeRecoveryProcedure = async (serviceName, incidentId) => {
             try {
               await kafkaProducer.send(TOPICS.RECOVERY_EVENTS, {
                 eventType: 'RECOVERY_SUCCESS',
+                projectId,
+                serviceId: serviceName,
                 service: serviceName,
                 incidentId,
+                recoveryActionId,
+                actionType,
+                requestedBy,
                 attempt,
                 timestamp: new Date().toISOString()
               });
@@ -103,18 +153,30 @@ const executeRecoveryProcedure = async (serviceName, incidentId) => {
             try {
               await axios.post(`http://localhost:${INCIDENT_PORT}/incidents/trigger`, {
                 eventType: 'SERVICE_RECOVERED',
+                projectId,
+                serviceId: serviceName,
                 service: serviceName,
+                incidentId,
                 timestamp: new Date().toISOString()
               }, { timeout: 3000 });
             } catch (e) {}
             try {
               await axios.post(`http://localhost:${GATEWAY_PORT}/internal/push`, {
                 eventType: 'RECOVERY_SUCCESS',
-                payload: { service: serviceName, incidentId, attempt, timestamp: new Date().toISOString() }
+                payload: {
+                  projectId,
+                  serviceId: serviceName,
+                  service: serviceName,
+                  incidentId,
+                  recoveryActionId,
+                  actionType,
+                  attempt,
+                  timestamp: new Date().toISOString()
+                }
               }, { timeout: 2000 });
             } catch (e) {}
           }
-          break;
+          return { success: true, recoveryActionId, attempt, actionType };
         }
       } catch (err) {
         logger.warn(`Recovery attempt ${attempt} failed for ${serviceName}: ${err.message}`);
@@ -132,8 +194,13 @@ const executeRecoveryProcedure = async (serviceName, incidentId) => {
         try {
           await kafkaProducer.send(TOPICS.RECOVERY_EVENTS, {
             eventType: 'RECOVERY_FAILED',
+            projectId,
+            serviceId: serviceName,
             service: serviceName,
             incidentId,
+            recoveryActionId,
+            actionType,
+            requestedBy,
             maxAttempts,
             timestamp: new Date().toISOString()
           });
@@ -144,10 +211,18 @@ const executeRecoveryProcedure = async (serviceName, incidentId) => {
         try {
           await axios.post(`http://localhost:${GATEWAY_PORT}/internal/push`, {
             eventType: 'RECOVERY_FAILED',
-            payload: { service: serviceName, incidentId, timestamp: new Date().toISOString() }
+            payload: {
+              projectId,
+              serviceId: serviceName,
+              service: serviceName,
+              incidentId,
+              recoveryActionId,
+              timestamp: new Date().toISOString()
+            }
           }, { timeout: 2000 });
         } catch (e) {}
       }
+      return { success: false, recoveryActionId, error: `Exhausted ${maxAttempts} recovery attempts` };
     }
   } finally {
     activeRecoveries.delete(serviceName);
@@ -160,7 +235,11 @@ const handleIncidentEvent = async (topic, message) => {
     if (incident && ['CRITICAL', 'HIGH'].includes(incident.severity)) {
       logger.info(`Received CRITICAL incident for ${incident.serviceName}. Initiating recovery sequence...`);
       // Run recovery in background
-      executeRecoveryProcedure(incident.serviceName, incident.id);
+      executeRecoveryProcedure(incident.serviceName, incident.id, {
+        projectId: incident.projectId || 'ecommerce-001',
+        actionType: 'RESTART',
+        requestedBy: 'SYSTEM'
+      });
     }
   }
 };
@@ -174,13 +253,77 @@ app.get('/metrics', async (req, res) => {
   res.end(await metrics.register.metrics());
 });
 
+// Existing manual recovery trigger for dashboard backward compatibility
 app.post('/api/recovery/trigger', async (req, res) => {
-  const { service, incidentId } = req.body;
+  const { service, incidentId, projectId, actionType } = req.body;
   if (!service) return res.status(400).json({ error: 'Service name required' });
   
   logger.info(`Manual recovery triggered for ${service}`);
-  executeRecoveryProcedure(service, incidentId || `manual-${Date.now()}`);
+  executeRecoveryProcedure(service, incidentId || `manual-${Date.now()}`, {
+    projectId: projectId || 'ecommerce-001',
+    actionType: actionType || 'RESTART',
+    requestedBy: 'OPERATOR'
+  });
   res.json({ message: `Recovery sequence initiated for ${service}` });
+});
+
+// ─── Pre-AI Controlled Recovery API ──────────────────────────────────────────
+// POST /projects/:projectId/incidents/:incidentId/recovery
+app.post('/projects/:projectId/incidents/:incidentId/recovery', async (req, res) => {
+  const { projectId, incidentId } = req.params;
+  const { serviceId, actionType = 'RESTART', requestedBy = 'AI_AGENT' } = req.body;
+
+  if (!serviceId) {
+    return res.status(400).json({ error: 'serviceId is required in request body' });
+  }
+
+  // 1. Project validation
+  const project = registry.getProject(projectId);
+  if (!project) {
+    return res.status(404).json({ error: `Project '${projectId}' not found` });
+  }
+
+  // 2. Service & Capability validation
+  const service = registry.getService(projectId, serviceId);
+  if (!service) {
+    return res.status(404).json({ error: `Service '${serviceId}' not found in project '${projectId}'` });
+  }
+
+  const normalizedAction = actionType.toUpperCase();
+  const allowedCapabilities = (service.recoveryCapabilities || ['restart']).map(c => c.toUpperCase());
+  if (!allowedCapabilities.includes(normalizedAction.toLowerCase()) && !allowedCapabilities.includes(normalizedAction)) {
+    return res.status(400).json({
+      error: `Action '${actionType}' is not supported for service '${serviceId}'. Supported capabilities: [${allowedCapabilities.join(', ')}]`,
+      serviceId,
+      allowedCapabilities
+    });
+  }
+
+  // 3. Initiate controlled recovery asynchronously
+  logger.info(`[Controlled Recovery] Request accepted for ${serviceId} (Action: ${normalizedAction}, RequestedBy: ${requestedBy})`);
+  
+  // Non-blocking execution so AI tool gets immediate structured response with tracking ID
+  executeRecoveryProcedure(serviceId, incidentId, {
+    projectId,
+    actionType: normalizedAction,
+    requestedBy
+  }).catch(err => {
+    logger.error(`Controlled recovery execution error for ${serviceId}: ${err.message}`);
+  });
+
+  const recoveryActionId = `REC-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+
+  res.status(202).json({
+    status: 'ACCEPTED',
+    message: `Recovery action '${normalizedAction}' initiated for service '${serviceId}'`,
+    recoveryActionId,
+    projectId,
+    incidentId,
+    serviceId,
+    actionType: normalizedAction,
+    requestedBy,
+    timestamp: new Date().toISOString()
+  });
 });
 
 const start = async () => {
