@@ -4,13 +4,22 @@ const { v4: uuidv4 } = require('uuid');
 const broker = process.env.KAFKA_BROKER || '127.0.0.1:9092';
 const clientId = process.env.KAFKA_CLIENT_ID || 'sentinelflow';
 
+// Build SASL config if credentials are provided (Redpanda Cloud, Confluent, Upstash, etc.)
+const saslConfig = process.env.KAFKA_SASL_USERNAME ? {
+  mechanism: (process.env.KAFKA_SASL_MECHANISM || 'scram-sha-256').toLowerCase(),
+  username: process.env.KAFKA_SASL_USERNAME,
+  password: process.env.KAFKA_SASL_PASSWORD,
+} : undefined;
+
 const kafka = new Kafka({
   clientId,
   brokers: [broker],
+  ssl: process.env.KAFKA_SSL === 'true' || !!saslConfig,
+  sasl: saslConfig,
   logLevel: logLevel.NOTHING,
-  connectionTimeout: 5000,
-  authenticationTimeout: 5000,
-  requestTimeout: 10000,
+  connectionTimeout: 10000,
+  authenticationTimeout: 10000,
+  requestTimeout: 30000,
   retry: {
     initialRetryTime: 500,
     retries: 5

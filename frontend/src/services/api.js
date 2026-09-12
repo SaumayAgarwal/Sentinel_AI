@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const GATEWAY_URL = 'http://localhost:3009';
+const GATEWAY_URL = import.meta.env.VITE_API_URL || 'http://localhost:3009';
 
 export const fetchServices = async (projectId) => {
   try {

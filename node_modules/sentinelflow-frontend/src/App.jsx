@@ -13,7 +13,7 @@ import AiInsightsPanel from './components/AiInsightsPanel';
 import { fetchServices, fetchIncidents, fetchEvents, acknowledgeIncident, fetchSreMetrics, fetchInfraStatus } from './services/api';
 import { getProjectById, BANKING_PROJECT_DATA } from './data/projects';
 
-const SOCKET_URL = 'http://localhost:3009';
+const SOCKET_URL = import.meta.env.VITE_API_URL || 'http://localhost:3009';
 const POLL_INTERVAL = 5000;
 const FAST_POLL_INTERVAL = 1000;
 const FAST_POLL_DURATION = 15000;

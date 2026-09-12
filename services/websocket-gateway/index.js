@@ -8,7 +8,7 @@ const { createLogger, createConsumer, TOPICS, metrics, registry, logStore } = re
 
 
 const SERVICE_NAME = 'websocket-gateway';
-const PORT = process.env.PORT_GATEWAY || 3009;
+const PORT = process.env.PORT || process.env.PORT_GATEWAY || 3009;
 const logger = createLogger(SERVICE_NAME);
 
 const app = express();
