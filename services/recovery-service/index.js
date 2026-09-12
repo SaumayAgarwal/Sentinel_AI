@@ -17,7 +17,24 @@ const SERVICE_PORTS = {
   'user-service': process.env.PORT_USER || 3001,
   'order-service': process.env.PORT_ORDER || 3002,
   'payment-service': process.env.PORT_PAYMENT || 3003,
-  'inventory-service': process.env.PORT_INVENTORY || 3004
+  'inventory-service': process.env.PORT_INVENTORY || 3004,
+  'auth-service': process.env.PORT_BANKING_AUTH || 3021,
+  'account-service': process.env.PORT_BANKING_ACCOUNT || 3022,
+  'transaction-service': process.env.PORT_BANKING_TRANSACTION || 3023,
+  'fraud-detection-service': process.env.PORT_BANKING_FRAUD || 3024,
+  'notification-service': process.env.PORT_BANKING_NOTIFICATION || 3025
+};
+
+const resolveRecoveryPort = (serviceName, projectId) => {
+  if (projectId) {
+    const svc = registry.getService(projectId, serviceName);
+    if (svc?.port) return svc.port;
+  }
+  for (const p of registry.getProjects()) {
+    const s = registry.getService(p.id, serviceName);
+    if (s?.port) return s.port;
+  }
+  return SERVICE_PORTS[serviceName] || 3003;
 };
 
 const activeRecoveries = new Set();
@@ -27,6 +44,7 @@ const executeRecoveryProcedure = async (serviceName, incidentId, options = {}) =
   const actionType = (options.actionType || 'RESTART').toUpperCase();
   const requestedBy = options.requestedBy || 'SYSTEM';
   const recoveryActionId = `REC-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+  const recoveryKey = `${projectId}:${serviceName}`;
 
   // Capability validation
   const capInfo = registry.getRecoveryCapabilities(projectId, serviceName);
@@ -40,15 +58,14 @@ const executeRecoveryProcedure = async (serviceName, incidentId, options = {}) =
     };
   }
 
-  if (activeRecoveries.has(serviceName)) {
-    logger.info(`Recovery already in progress for ${serviceName}, skipping duplicate recovery trigger.`);
+  if (activeRecoveries.has(recoveryKey)) {
+    logger.info(`Recovery already in progress for ${serviceName} (${projectId}), skipping duplicate recovery trigger.`);
     return { success: false, recoveryActionId, error: `Recovery already active for ${serviceName}` };
   }
-  activeRecoveries.add(serviceName);
+  activeRecoveries.add(recoveryKey);
 
   try {
-    const registeredSvc = registry.getService(projectId, serviceName);
-    const targetPort = registeredSvc?.port || SERVICE_PORTS[serviceName];
+    const targetPort = resolveRecoveryPort(serviceName, projectId);
     if (!targetPort) {
       logger.error(`Unknown service for recovery: ${serviceName} (projectId: ${projectId})`);
       return { success: false, recoveryActionId, error: `Unknown service: ${serviceName}` };
@@ -225,18 +242,21 @@ const executeRecoveryProcedure = async (serviceName, incidentId, options = {}) =
       return { success: false, recoveryActionId, error: `Exhausted ${maxAttempts} recovery attempts` };
     }
   } finally {
-    activeRecoveries.delete(serviceName);
+    activeRecoveries.delete(recoveryKey);
   }
 };
 
 const handleIncidentEvent = async (topic, message) => {
   if (topic === TOPICS.INCIDENT_EVENTS && message.eventType === 'INCIDENT_CREATED') {
     const { incident } = message;
-    if (incident && ['CRITICAL', 'HIGH'].includes(incident.severity)) {
-      logger.info(`Received CRITICAL incident for ${incident.serviceName}. Initiating recovery sequence...`);
+    const targetService = incident?.serviceId || incident?.serviceName || message.serviceId || message.service;
+    const targetProjectId = incident?.projectId || message.projectId || (registry.getProjects().find(p => registry.getService(p.id, targetService))?.id) || 'ecommerce-001';
+    
+    if (incident && ['CRITICAL', 'HIGH'].includes(incident.severity) && targetService) {
+      logger.info(`Received CRITICAL incident for ${targetService} (${targetProjectId}). Initiating recovery sequence...`);
       // Run recovery in background
-      executeRecoveryProcedure(incident.serviceName, incident.id, {
-        projectId: incident.projectId || 'ecommerce-001',
+      executeRecoveryProcedure(targetService, incident.id || incident.incidentId, {
+        projectId: targetProjectId,
         actionType: 'RESTART',
         requestedBy: 'SYSTEM'
       });
