@@ -381,13 +381,17 @@ const createIncident = async (eventData) => {
 };
 
 const resolveIncident = async (serviceName) => {
-  const incidentId = activeIncidentMap.get(serviceName);
+  if (!serviceName) return;
+  const rawService = serviceName;
+  const normalizedService = serviceName.toLowerCase().trim();
+
+  const incidentId = activeIncidentMap.get(rawService) || activeIncidentMap.get(normalizedService);
 
   // Also try Redis
   let redisId = null;
   if (redisAvailable && redis) {
     try {
-      redisId = await redis.get(`incident:active:${serviceName}`);
+      redisId = (await redis.get(`incident:active:${rawService}`)) || (await redis.get(`incident:active:${normalizedService}`));
     } catch (err) {}
   }
 
@@ -397,7 +401,16 @@ const resolveIncident = async (serviceName) => {
   if (!resolveId && dbAvailable && prisma) {
     try {
       const openInc = await prisma.incident.findFirst({
-        where: { serviceName, status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] } }
+        where: {
+          OR: [
+            { serviceId: { equals: rawService, mode: 'insensitive' } },
+            { serviceName: { equals: rawService, mode: 'insensitive' } },
+            { serviceId: { equals: normalizedService, mode: 'insensitive' } },
+            { serviceName: { equals: normalizedService, mode: 'insensitive' } }
+          ],
+          status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] }
+        },
+        orderBy: { createdAt: 'desc' }
       });
       if (openInc) resolveId = openInc.id;
     } catch (err) {}
@@ -426,7 +439,8 @@ const resolveIncident = async (serviceName) => {
 
   if (!incident) {
     logger.warn(`Could not find incident to resolve for ${serviceName}`);
-    activeIncidentMap.delete(serviceName);
+    activeIncidentMap.delete(rawService);
+    activeIncidentMap.delete(normalizedService);
     return;
   }
 
@@ -453,7 +467,15 @@ const resolveIncident = async (serviceName) => {
       });
       // Also resolve any leftover open incidents for this service to avoid orphaned state
       await prisma.incident.updateMany({
-        where: { serviceName, status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] } },
+        where: {
+          OR: [
+            { serviceId: { equals: rawService, mode: 'insensitive' } },
+            { serviceName: { equals: rawService, mode: 'insensitive' } },
+            { serviceId: { equals: normalizedService, mode: 'insensitive' } },
+            { serviceName: { equals: normalizedService, mode: 'insensitive' } }
+          ],
+          status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] }
+        },
         data: { status: 'RESOLVED', resolvedAt: new Date() }
       });
     } catch (err) {
@@ -462,10 +484,12 @@ const resolveIncident = async (serviceName) => {
   }
 
   // Clear active incident tracking
-  activeIncidentMap.delete(serviceName);
+  activeIncidentMap.delete(rawService);
+  activeIncidentMap.delete(normalizedService);
   if (redisAvailable && redis) {
     try {
-      await redis.del(`incident:active:${serviceName}`);
+      await redis.del(`incident:active:${rawService}`);
+      await redis.del(`incident:active:${normalizedService}`);
     } catch (err) {}
   }
 
@@ -731,6 +755,32 @@ app.delete('/api/dlq/:id', async (req, res) => {
 
     logger.info(`[DLQ] 🗑️  Event ${dlqEvent.eventId} deleted from DLQ`);
     res.json({ ok: true, deleted: dlqEvent.eventId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+// Resolve all active/stale open incidents (for clean demo resets)
+app.post('/api/incidents/resolve-all', async (req, res) => {
+  const { projectId } = req.body || {};
+  if (!dbAvailable || !prisma) return res.status(500).json({ error: 'DB unavailable' });
+  try {
+    const whereClause = { status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] } };
+    if (projectId) whereClause.projectId = projectId;
+
+    const result = await prisma.incident.updateMany({
+      where: whereClause,
+      data: { status: 'RESOLVED', resolvedAt: new Date() }
+    });
+
+    activeIncidentMap.clear();
+    if (redisAvailable && redis) {
+      try {
+        const keys = await redis.keys('incident:active:*');
+        if (keys.length > 0) await redis.del(keys);
+      } catch (e) {}
+    }
+
+    await pushToGateway('INCIDENTS_RESOLVED_ALL', { projectId, count: result.count });
+    res.json({ message: 'All open incidents marked as resolved', resolvedCount: result.count });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

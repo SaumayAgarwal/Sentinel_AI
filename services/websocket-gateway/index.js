@@ -228,6 +228,19 @@ app.patch('/api/incidents/:id/acknowledge', async (req, res) => {
   }
 });
 
+// Proxy endpoint to resolve all active/stale incidents
+app.post('/api/incidents/resolve-all', async (req, res) => {
+  try {
+    const incidentPort = process.env.PORT_INCIDENT || 3006;
+    const response = await axios.post(`http://localhost:${incidentPort}/api/incidents/resolve-all`, req.body, {
+      timeout: 3000
+    });
+    return res.json(response.data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Proxy SRE metrics from incident service (supports optional projectId query param)
 app.get('/api/metrics/sre', async (req, res) => {
   try {
