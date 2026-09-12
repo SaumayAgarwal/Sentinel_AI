@@ -12,7 +12,7 @@ const SERVICES = [
   { name: 'RECOVERY', script: 'services/recovery-service/index.js', color: '\x1b[35m' },
   { name: 'NOTIF', script: 'services/notification-service/index.js', color: '\x1b[90m' },
   { name: 'GATEWAY', script: 'services/websocket-gateway/index.js', color: '\x1b[33m' },
-  { name: 'AI', script: 'services/sentinel-ai/src/index.js', color: '\x1b[45m\x1b[37m' }
+  { name: 'AI', script: 'services/sentinel-ai/server.js', color: '\x1b[45m\x1b[37m' }
 ];
 
 const RESET = '\x1b[0m';
