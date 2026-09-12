@@ -339,9 +339,11 @@ const createIncident = async (eventData) => {
   const projectId = eventData.projectId || registry.DEFAULT_PROJECT_ID || 'ecommerce-001';
   const reason = eventData.reason || eventData.error || (eventData.eventType ? `${eventData.eventType} detected` : 'Health check failures exceeded threshold');
 
+  const uniqueIncidentId = `INC-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+
   let incident = {
-    id: `inc-${Date.now()}`,
-    incidentId: `INC-${Date.now().toString().slice(-6)}`,
+    id: `inc-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    incidentId: uniqueIncidentId,
     projectId,
     serviceId: serviceName,
     serviceName,
@@ -358,6 +360,7 @@ const createIncident = async (eventData) => {
 
   if (!dbAvailable || !prisma) {
     activeIncidentMap.delete(serviceName);
+    activeIncidentMap.delete(dedupKey);
     logger.error('❌ Cannot create incident: PostgreSQL database is unavailable.');
     throw new Error('PostgreSQL database dependency unavailable');
   }
@@ -366,7 +369,7 @@ const createIncident = async (eventData) => {
     incident = await prisma.incident.create({
       data: {
         projectId,
-        incidentId: incident.incidentId,
+        incidentId: uniqueIncidentId,
         serviceId: serviceName,
         serviceName,
         type: eventData.eventType || 'SERVICE_DOWN',
@@ -380,15 +383,18 @@ const createIncident = async (eventData) => {
     });
   } catch (err) {
     activeIncidentMap.delete(serviceName);
+    activeIncidentMap.delete(dedupKey);
     logger.error(`Prisma create failed: ${err.message}`);
     throw err;
   }
 
   // Register final incident ID in in-memory map and Redis
   activeIncidentMap.set(serviceName, incident.id);
+  activeIncidentMap.set(dedupKey, incident.id);
   if (redisAvailable && redis) {
     try {
       await redis.set(`incident:active:${serviceName}`, incident.id, 'EX', 86400);
+      await redis.set(`incident:active:${dedupKey}`, incident.id, 'EX', 86400);
     } catch (err) {
       logger.warn(`Redis set failed: ${err.message}`);
     }
