@@ -85,24 +85,21 @@ const dispatchServiceEvent = async (eventData) => {
   if (kafkaProducer) {
     try {
       await kafkaProducer.send(TOPICS.SERVICE_EVENTS, payload);
-      kafkaSent = true;
       logger.info(`Published to Kafka: ${payload.eventType} for ${payload.serviceId}`);
     } catch (err) {
-      logger.warn(`Kafka send failed: ${err.message}. Using HTTP fallback.`);
+      logger.warn(`Kafka send failed: ${err.message}.`);
     }
   }
 
-  // Only call incident service via HTTP if Kafka send failed
-  if (!kafkaSent) {
-    try {
-      await axios.post(
-        `http://localhost:${INCIDENT_PORT}/incidents/trigger`,
-        payload,
-        { timeout: 3000 }
-      );
-    } catch (err) {
-      logger.warn(`Incident service HTTP call failed: ${err.message}`);
-    }
+  // Always notify incident service directly via HTTP so incidents are created with 100% reliability
+  try {
+    await axios.post(
+      `http://localhost:${INCIDENT_PORT}/incidents/trigger`,
+      payload,
+      { timeout: 3000 }
+    );
+  } catch (err) {
+    logger.warn(`Incident service direct HTTP notification: ${err.message}`);
   }
 
   // Always push raw service event to gateway for the UI service status indicators

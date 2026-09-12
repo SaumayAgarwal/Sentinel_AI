@@ -206,27 +206,25 @@ const publishIncidentEvent = async (eventType, incident) => {
   if (kafkaProducer) {
     try {
       await kafkaProducer.send(TOPICS.INCIDENT_EVENTS, payload);
-      kafkaSent = true;
     } catch (err) {
       logger.warn(`Kafka incident publish failed: ${err.message}`);
     }
   }
 
-  // HTTP fallback if Kafka unavailable or failed
-  if (!kafkaSent) {
-    await pushToGateway(eventType, incident);
+  // Always push to Gateway via HTTP for instantaneous real-time UI updates
+  await pushToGateway(eventType, incident);
 
-    if (eventType === 'INCIDENT_CREATED' && incident && ['CRITICAL', 'HIGH'].includes(incident.severity)) {
-      try {
-        await axios.post(
-          `http://localhost:${RECOVERY_PORT}/api/recovery/trigger`,
-          { service: incident.serviceName, incidentId: incident.id },
-          { timeout: 3000 }
-        );
-        logger.info(`HTTP Fallback: Triggered recovery-service for ${incident.serviceName}`);
-      } catch (err) {
-        logger.warn(`HTTP Fallback: Failed to trigger recovery-service: ${err.message}`);
-      }
+  // Trigger recovery for high/critical incidents directly
+  if (eventType === 'INCIDENT_CREATED' && incident && ['CRITICAL', 'HIGH'].includes(incident.severity)) {
+    try {
+      await axios.post(
+        `http://localhost:${RECOVERY_PORT}/api/recovery/trigger`,
+        { service: incident.serviceName || incident.serviceId, incidentId: incident.id, projectId: incident.projectId },
+        { timeout: 3000 }
+      );
+      logger.info(`Triggered recovery-service for ${incident.serviceName || incident.serviceId}`);
+    } catch (err) {
+      logger.warn(`Failed to trigger recovery-service via HTTP: ${err.message}`);
     }
   }
 };
