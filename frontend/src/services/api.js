@@ -81,7 +81,7 @@ export const triggerRecovery = async (serviceName, projectId) => {
 
 export const acknowledgeIncident = async (incidentId) => {
   try {
-    const res = await axios.patch(`http://localhost:3006/incidents/${incidentId}/acknowledge`);
+    const res = await axios.patch(`${GATEWAY_URL}/api/incidents/${incidentId}/acknowledge`);
     return res.data;
   } catch (err) {
     console.error('Failed to acknowledge incident:', err);

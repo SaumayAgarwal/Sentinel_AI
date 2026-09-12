@@ -215,6 +215,19 @@ app.get('/api/incidents', async (req, res) => {
   }
 });
 
+// Proxy endpoint to acknowledge an incident
+app.patch('/api/incidents/:id/acknowledge', async (req, res) => {
+  try {
+    const incidentPort = process.env.PORT_INCIDENT || 3006;
+    const response = await axios.patch(`http://localhost:${incidentPort}/incidents/${req.params.id}/acknowledge`, req.body, {
+      timeout: 3000
+    });
+    return res.json(response.data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Proxy SRE metrics from incident service (supports optional projectId query param)
 app.get('/api/metrics/sre', async (req, res) => {
   try {
