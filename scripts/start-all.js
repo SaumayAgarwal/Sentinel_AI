@@ -19,13 +19,27 @@ const RESET = '\x1b[0m';
 const rootDir = path.resolve(__dirname, '..');
 const children = [];
 
-console.log('?? Starting SentinelAI Backend Services in Production...');
+const gatewayPort = process.env.PORT || process.env.PORT_GATEWAY || '3009';
+
+console.log(`?? Starting SentinelAI Backend Services in Production (Gateway Port: ${gatewayPort})...`);
 
 SERVICES.forEach(svc => {
   const fullPath = path.join(rootDir, svc.script);
+  
+  // Create process-specific env
+  const childEnv = {
+    ...process.env,
+    PORT_GATEWAY: gatewayPort
+  };
+
+  // Only the GATEWAY service should use Railway's public PORT
+  if (svc.name !== 'GATEWAY') {
+    delete childEnv.PORT;
+  }
+
   const child = spawn(process.execPath, [fullPath], {
     cwd: rootDir,
-    env: { ...process.env },
+    env: childEnv,
     stdio: ['inherit', 'pipe', 'pipe']
   });
 

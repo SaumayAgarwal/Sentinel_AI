@@ -157,6 +157,7 @@ io.on('connection', (socket) => {
   });
 });
 
+app.get('/', (req, res) => res.json({ status: 'UP', service: SERVICE_NAME, message: 'SentinelAI Gateway is running' }));
 app.get('/health', (req, res) => res.json({ status: 'UP', service: SERVICE_NAME }));
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', metrics.register.contentType);
@@ -575,8 +576,8 @@ const start = async () => {
     logger.warn(`Kafka consumer init failed: ${err.message}. Gateway will use HTTP-push mode for real-time events.`);
   }
 
-  server.listen(PORT, () => {
-    logger.info(`${SERVICE_NAME} running on port ${PORT}`);
+  server.listen(PORT, '0.0.0.0', () => {
+    logger.info(`${SERVICE_NAME} running on port ${PORT} (bound to 0.0.0.0)`);
   });
 };
 
