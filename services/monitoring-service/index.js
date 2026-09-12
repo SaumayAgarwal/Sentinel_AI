@@ -392,7 +392,11 @@ app.get('/projects/:projectId/services/:serviceId/metrics', async (req, res) => 
   }
 });
 
-const start = async () => {
+app.listen(PORT, () => {
+  logger.info(`${SERVICE_NAME} running on port ${PORT}`);
+});
+
+(async () => {
   // Kafka is optional
   try {
     await initTopics(logger);
@@ -409,10 +413,4 @@ const start = async () => {
   }, 1000);
 
   logger.info(`Monitoring service started, polling every ${POLL_INTERVAL_MS}ms (Threshold: ${FAILURE_THRESHOLD} failures)`);
-
-  app.listen(PORT, () => {
-    logger.info(`${SERVICE_NAME} running on port ${PORT}`);
-  });
-};
-
-start();
+})();

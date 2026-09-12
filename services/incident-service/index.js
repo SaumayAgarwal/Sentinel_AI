@@ -1050,7 +1050,11 @@ app.patch('/incidents/:id/acknowledge', async (req, res) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-const start = async () => {
+app.listen(PORT, () => {
+  logger.info(`${SERVICE_NAME} running on port ${PORT}`);
+});
+
+(async () => {
   await testDb();
 
   try {
@@ -1065,10 +1069,4 @@ const start = async () => {
   } catch (err) {
     logger.warn(`Kafka not available: ${err.message}. Running in HTTP-only mode.`);
   }
-
-  app.listen(PORT, () => {
-    logger.info(`${SERVICE_NAME} running on port ${PORT} (DB: ${dbAvailable ? 'postgres' : 'in-memory'}, Redis: ${redisAvailable ? 'connected' : 'unavailable'})`);
-  });
-};
-
-start();
+})();

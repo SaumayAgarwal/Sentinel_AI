@@ -562,8 +562,13 @@ app.post('/api/ai/investigate/:incidentId', async (req, res) => {
 });
 
 
-const start = async () => {
-  // Try Kafka (optional - system works without it)
+// 1. Start HTTP & WebSocket server immediately on boot (so Railway/cloud healthcheck passes in <100ms)
+server.listen(PORT, '0.0.0.0', () => {
+  logger.info(`${SERVICE_NAME} running on port ${PORT} (bound to 0.0.0.0)`);
+});
+
+// 2. Connect to Kafka in the background without blocking HTTP server startup
+(async () => {
   try {
     await createConsumer(
       'websocket-gateway-group',
@@ -575,10 +580,4 @@ const start = async () => {
   } catch (err) {
     logger.warn(`Kafka consumer init failed: ${err.message}. Gateway will use HTTP-push mode for real-time events.`);
   }
-
-  server.listen(PORT, '0.0.0.0', () => {
-    logger.info(`${SERVICE_NAME} running on port ${PORT} (bound to 0.0.0.0)`);
-  });
-};
-
-start();
+})();

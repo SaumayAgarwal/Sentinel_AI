@@ -326,17 +326,15 @@ app.post('/projects/:projectId/incidents/:incidentId/recovery', async (req, res)
   });
 });
 
-const start = async () => {
+app.listen(PORT, () => {
+  logger.info(`${SERVICE_NAME} running on port ${PORT}`);
+});
+
+(async () => {
   try {
     kafkaProducer = await createProducer(logger);
     await createConsumer('recovery-service-group', [TOPICS.INCIDENT_EVENTS], handleIncidentEvent, logger);
   } catch (err) {
     logger.warn(`Kafka consumer/producer init in recovery service error: ${err.message}`);
   }
-
-  app.listen(PORT, () => {
-    logger.info(`${SERVICE_NAME} running on port ${PORT}`);
-  });
-};
-
-start();
+})();
