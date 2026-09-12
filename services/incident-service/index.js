@@ -159,6 +159,7 @@ const pushToGateway = async (eventType, payload) => {
 
 // ─── Kafka publish (with HTTP fallback to gateway) ───────────────────────────
 const RECOVERY_PORT = process.env.PORT_RECOVERY || 3007;
+const AI_PORT = process.env.PORT_AI || 3011;
 
 const publishIncidentEvent = async (eventType, incident) => {
   const payload = {
@@ -175,6 +176,21 @@ const publishIncidentEvent = async (eventType, incident) => {
   };
   let kafkaSent = false;
 
+  // Always trigger SentinelAI investigation for new incidents
+  if (eventType === 'INCIDENT_CREATED') {
+    axios.post(
+      `http://localhost:${AI_PORT}/api/ai/investigate/${incident?.incidentId || incident?.id}`,
+      {
+        serviceId: incident?.serviceId || incident?.serviceName,
+        type: incident?.type || incident?.reason || 'SERVICE_DOWN',
+        severity: incident?.severity || 'CRITICAL',
+        projectId: incident?.projectId || 'ecommerce-001'
+      },
+      { timeout: 5000 }
+    ).catch(err => {
+      logger.warn(`SentinelAI direct trigger notice: ${err.message}`);
+    });
+  }
 
   if (kafkaProducer) {
     try {
