@@ -37,6 +37,17 @@ const testDb = async () => {
     } catch (vecErr) {
       logger.warn(`PostgreSQL pgvector extension unavailable (${vecErr.message}). Semantic RAG will fallback to RAG V1.`);
     }
+
+    // Auto-resolve any stale open incidents on boot so fresh failures generate incidents cleanly
+    try {
+      const staleUpdated = await prisma.incident.updateMany({
+        where: { status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] } },
+        data: { status: 'RESOLVED', resolvedAt: new Date() }
+      });
+      if (staleUpdated.count > 0) {
+        logger.info(`Auto-resolved ${staleUpdated.count} stale open incidents on startup.`);
+      }
+    } catch (cleanErr) {}
   } catch (err) {
     dbAvailable = false;
     logger.error(`❌ PostgreSQL is UNAVAILABLE on ${process.env.DATABASE_URL || 'localhost:5432'}: ${err.message}. Please ensure Docker container 'sentinelflow-postgres' is running.`);
@@ -240,12 +251,14 @@ const appendTimelineToExisting = async (incidentId, newEntry) => {
 };
 
 const createIncident = async (eventData) => {
-  const serviceName = eventData.service;
+  const serviceName = eventData.service || eventData.serviceId;
+  const projectId = eventData.projectId || registry.DEFAULT_PROJECT_ID || 'ecommerce-001';
+  const dedupKey = `${projectId}:${serviceName}`;
 
   // 1. Deduplication: check in-memory first (always works)
-  if (activeIncidentMap.has(serviceName)) {
-    const existingId = activeIncidentMap.get(serviceName);
-    logger.info(`Updating active incident timeline for ${serviceName} (active: ${existingId})`);
+  if (activeIncidentMap.has(dedupKey) || activeIncidentMap.has(serviceName)) {
+    const existingId = activeIncidentMap.get(dedupKey) || activeIncidentMap.get(serviceName);
+    logger.info(`Updating active incident timeline for ${serviceName} (${projectId}) (active: ${existingId})`);
     if (dbAvailable && prisma && existingId && !existingId.startsWith('inc-pending-')) {
       await appendTimelineToExisting(existingId, {
         timestamp: new Date().toISOString(),
@@ -259,9 +272,9 @@ const createIncident = async (eventData) => {
   // 2. Also check Redis if available
   if (redisAvailable && redis) {
     try {
-      const existing = await redis.get(`incident:active:${serviceName}`);
+      const existing = (await redis.get(`incident:active:${dedupKey}`)) || (await redis.get(`incident:active:${serviceName}`));
       if (existing) {
-        activeIncidentMap.set(serviceName, existing); // Sync in-memory
+        activeIncidentMap.set(dedupKey, existing); // Sync in-memory
         logger.info(`Updating active incident timeline for ${serviceName} via Redis (active: ${existing})`);
         if (dbAvailable && prisma) {
           await appendTimelineToExisting(existing, {
@@ -277,16 +290,23 @@ const createIncident = async (eventData) => {
     }
   }
 
-  // 3. Check DB for any active OPEN incident for this service
+  // 3. Check DB for any active OPEN incident for this service and project
   if (dbAvailable && prisma) {
     try {
       const openInc = await prisma.incident.findFirst({
-        where: { serviceName, status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] } }
+        where: {
+          projectId,
+          OR: [
+            { serviceId: { equals: serviceName, mode: 'insensitive' } },
+            { serviceName: { equals: serviceName, mode: 'insensitive' } }
+          ],
+          status: { in: ['OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'RECOVERING'] }
+        }
       });
       if (openInc) {
-        activeIncidentMap.set(serviceName, openInc.id);
+        activeIncidentMap.set(dedupKey, openInc.id);
         if (redisAvailable && redis) {
-          await redis.set(`incident:active:${serviceName}`, openInc.id, 'EX', 86400);
+          await redis.set(`incident:active:${dedupKey}`, openInc.id, 'EX', 86400);
         }
         logger.info(`Updating active incident timeline for ${serviceName} via DB (existing OPEN: ${openInc.id})`);
         await appendTimelineToExisting(openInc.id, {
