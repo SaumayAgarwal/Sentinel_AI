@@ -336,7 +336,6 @@ const createIncident = async (eventData) => {
     { timestamp: now.toISOString(), event: 'Incident Created', details: `Incident record opened in PostgreSQL for ${serviceName} (Severity: ${eventData.severity || 'CRITICAL'})` }
   ];
 
-  const projectId = eventData.projectId || registry.DEFAULT_PROJECT_ID || 'ecommerce-001';
   const reason = eventData.reason || eventData.error || (eventData.eventType ? `${eventData.eventType} detected` : 'Health check failures exceeded threshold');
 
   const uniqueIncidentId = `INC-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
@@ -782,6 +781,8 @@ app.delete('/api/dlq/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
 // Resolve all active/stale open incidents (for clean demo resets)
 app.post('/api/incidents/resolve-all', async (req, res) => {
   const { projectId } = req.body || {};
