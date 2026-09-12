@@ -8,7 +8,7 @@
     "frontend"
   ],
   "scripts": {
-    "start": "concurrently -k -p \"[{name}]\" -n \"USER,ORDER,PAYMENT,INVENTORY,BANKING,MONITOR,INCIDENT,RECOVERY,NOTIF,GATEWAY,AI\" -c \"cyan,blue,magenta,yellow,greenBright,red,green,purple,gray,orange,bgMagenta.white\" \"node services/user-service/index.js\" \"node services/order-service/index.js\" \"node services/payment-service/index.js\" \"node services/inventory-service/index.js\" \"node services/banking-services/index.js\" \"node services/monitoring-service/index.js\" \"node services/incident-service/index.js\" \"node services/recovery-service/index.js\" \"node services/notification-service/index.js\" \"node services/websocket-gateway/index.js\" \"node services/sentinel-ai/src/index.js\"",
+    "start": "node scripts/start-all.js",
     "dev": "npm run dev:all",
     "dev:all": "concurrently -k -p \"[{name}]\" -n \"USER,ORDER,PAYMENT,INVENTORY,BANKING,MONITOR,INCIDENT,RECOVERY,NOTIF,GATEWAY,AI,FRONTEND\" -c \"cyan,blue,magenta,yellow,greenBright,red,green,purple,gray,orange,bgMagenta.white,white\" \"npm run dev -w services/user-service\" \"npm run dev -w services/order-service\" \"npm run dev -w services/payment-service\" \"npm run dev -w services/inventory-service\" \"npm run dev -w services/banking-services\" \"npm run dev -w services/monitoring-service\" \"npm run dev -w services/incident-service\" \"npm run dev -w services/recovery-service\" \"npm run dev -w services/notification-service\" \"npm run dev -w services/websocket-gateway\" \"npm run dev -w services/sentinel-ai\" \"npm run dev -w frontend\"",
 
